@@ -71,6 +71,13 @@ this mode on client side.
 
 Adding argument "-R" to the command line will cause MTProxy to allow connections only from the clients with random padding mode enabled.
 
+## TLS-transport
+Set tag with argument: `-D <domain>`, the domain must support TLS 1.3.
+
+The secret has this format: `ee` + `<secret>` + `<domain> (in hex format)`
+
+When using this protocol, all others are disabled. Also, it is not recommended to set the value of workers for better replay protection.
+
 ## Systemd example configuration
 1. Create systemd service file (it's standard path for the most Linux distros, but you should check it before):
 ```bash
