@@ -572,6 +572,11 @@ void compute_stats_sum (void) {
  *
  */
 
+static int cmp_uint (const void *a, const void *b) {
+  unsigned x = *(const unsigned *) a, y = *(const unsigned *) b;
+  return (x > y) - (x < y);
+}
+
 /* Count unique IPv4 addresses among inbound ext_connections (current worker).
  * Must be called from engine context. IPv6-only connections are not counted. */
 static int count_unique_ips (void) {
@@ -602,10 +607,6 @@ static int count_unique_ips (void) {
   }
   int unique = 0;
   if (n > 0) {
-    static int cmp_uint (const void *a, const void *b) {
-      unsigned x = *(const unsigned *) a, y = *(const unsigned *) b;
-      return (x > y) - (x < y);
-    }
     qsort (ips, (size_t) n, sizeof (unsigned), cmp_uint);
     unique = 1;
     for (int i = 1; i < n; i++) {
