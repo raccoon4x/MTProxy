@@ -572,6 +572,51 @@ void compute_stats_sum (void) {
  *
  */
 
+/* Count unique IPv4 addresses among inbound ext_connections (current worker).
+ * Must be called from engine context. IPv6-only connections are not counted. */
+static int count_unique_ips (void) {
+  check_engine_class ();
+  int n = 0;
+  unsigned int cap = (ext_connections > 0 ? (unsigned int) ext_connections * 2 : 1);
+  if (cap > EXT_CONN_TABLE_SIZE / 2) {
+    cap = EXT_CONN_TABLE_SIZE / 2;
+  }
+  unsigned *ips = (unsigned *) malloc (cap * sizeof (unsigned));
+  if (!ips) {
+    return 0;
+  }
+  for (int h = 0; h < EXT_CONN_HASH_SIZE; h++) {
+    for (struct ext_connection *Ex = InExtConnectionHash[h]; Ex; Ex = Ex->h_next) {
+      if ((unsigned) n >= cap) {
+	break;
+      }
+      connection_job_t CI = connection_get_by_fd_generation (Ex->in_fd, Ex->in_gen);
+      if (!CI) {
+	continue;
+      }
+      unsigned ip = CONN_INFO (CI)->remote_ip;
+      if (ip != 0) {
+	ips[n++] = ip;
+      }
+    }
+  }
+  int unique = 0;
+  if (n > 0) {
+    static int cmp_uint (const void *a, const void *b) {
+      unsigned x = *(const unsigned *) a, y = *(const unsigned *) b;
+      return (x > y) - (x < y);
+    }
+    qsort (ips, (size_t) n, sizeof (unsigned), cmp_uint);
+    unique = 1;
+    for (int i = 1; i < n; i++) {
+      if (ips[i] != ips[i - 1]) {
+	unique++;
+      }
+    }
+  }
+  free (ips);
+  return unique;
+}
 
 void mtfront_prepare_stats (stats_buffer_t *sb) {
   struct connections_stat conn;
@@ -579,11 +624,13 @@ void mtfront_prepare_stats (stats_buffer_t *sb) {
   long long tot_dh_rounds[3];
   int allocated_aes_crypto, allocated_aes_crypto_temp;
   int uptime = now - start_time;
+  int unique_ip_count;
   compute_stats_sum ();
   fetch_connections_stat (&conn);
   fetch_buffers_stat (&bufs);
   fetch_tot_dh_rounds_stat (tot_dh_rounds);
   fetch_aes_crypto_stat (&allocated_aes_crypto, &allocated_aes_crypto_temp);
+  unique_ip_count = count_unique_ips ();
 
   sb_prepare (sb);
   sb_memory (sb, AM_GET_MEMORY_USAGE_SELF);
@@ -629,6 +676,7 @@ void mtfront_prepare_stats (stats_buffer_t *sb) {
 	     "total_accept_connections_failed\t%lld %lld %lld %lld %lld\n"
 	     "ext_connections\t%lld\n"
 	     "ext_connections_created\t%lld\n"
+	     "unique_connections\t%d\n"
 	     "total_active_network_events\t%d\n"
 	     "total_network_buffers_used_size\t%lld\n"
 	     "total_network_buffers_allocated_bytes\t%lld\n"
@@ -695,6 +743,7 @@ void mtfront_prepare_stats (stats_buffer_t *sb) {
 	     S(conn.accept_nonblock_set_failed),
 	     S(ext_connections),
 	     S(ext_connections_created),
+	     unique_ip_count,
 	     S(ev_heap_size),
 	     SW(bufs.total_used_buffers_size),
 	     SW(bufs.allocated_buffer_bytes),
