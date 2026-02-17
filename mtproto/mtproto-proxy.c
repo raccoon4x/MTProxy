@@ -196,6 +196,8 @@ struct ext_connection ExtConnectionHead[MAX_CONNECTIONS];
 
 void lru_delete_ext_conn (struct ext_connection *Ext);
 
+static inline void check_engine_class (void);
+
 /*
  *
  *		UNIQUE IP ADDRESSES TRACKING
@@ -831,7 +833,7 @@ void mtfront_prepare_stats (stats_buffer_t *sb) {
 	     S(http_queries),
 	     S(http_bad_headers),
 	     safe_div (S(http_queries), uptime),
-	     SW(unique_ip_addresses),
+	     S1(unique_ip_addresses),
 	     proxy_mode,
 	     proxy_tag_set
   );
