@@ -196,121 +196,6 @@ struct ext_connection ExtConnectionHead[MAX_CONNECTIONS];
 
 void lru_delete_ext_conn (struct ext_connection *Ext);
 
-static inline void check_engine_class (void);
-
-/*
- *
- *		UNIQUE IP ADDRESSES TRACKING
- *
- */
-
-#define UNIQUE_IP_HASH_SIZE	(1 << 16)
-#define UNIQUE_IP_HASH_SHIFT	16
-
-struct unique_ip_entry {
-  struct unique_ip_entry *next;
-  unsigned ipv4;
-  unsigned char ipv6[16];
-  int is_ipv6;
-  int ref_count;
-};
-
-struct unique_ip_entry *UniqueIPHash[UNIQUE_IP_HASH_SIZE];
-int unique_ip_count;
-
-static inline int unique_ip_hash_ipv4 (unsigned ip) {
-  return (ip * 11400714819323198485ULL) >> (32 - UNIQUE_IP_HASH_SHIFT);
-}
-
-static inline int unique_ip_hash_ipv6 (unsigned char ip[16]) {
-  unsigned long long h = 0;
-  int i;
-  for (i = 0; i < 16; i++) {
-    h = h * 11400714819323198485ULL + ip[i];
-  }
-  return (h >> (64 - UNIQUE_IP_HASH_SHIFT));
-}
-
-static inline int unique_ip_hash (connection_job_t C) {
-  if (CONN_INFO(C)->remote_ip) {
-    return unique_ip_hash_ipv4 (CONN_INFO(C)->remote_ip);
-  } else {
-    return unique_ip_hash_ipv6 (CONN_INFO(C)->remote_ipv6);
-  }
-}
-
-static inline int unique_ip_equal (connection_job_t C, struct unique_ip_entry *E) {
-  if (CONN_INFO(C)->remote_ip) {
-    return !E->is_ipv6 && E->ipv4 == CONN_INFO(C)->remote_ip;
-  } else {
-    if (!E->is_ipv6) {
-      return 0;
-    }
-    return !memcmp (E->ipv6, CONN_INFO(C)->remote_ipv6, 16);
-  }
-}
-
-void unique_ip_add (connection_job_t C) {
-  check_engine_class ();
-  if (!CONN_INFO(C)->remote_ip && !(CONN_INFO(C)->flags & C_IPV6)) {
-    return; // no IP address
-  }
-  
-  int h = unique_ip_hash (C);
-  struct unique_ip_entry **prev = &UniqueIPHash[h], *cur = *prev;
-  
-  for (; cur; cur = cur->next) {
-    if (unique_ip_equal (C, cur)) {
-      cur->ref_count++;
-      return;
-    }
-    prev = &cur->next;
-  }
-  
-  cur = calloc (sizeof (struct unique_ip_entry), 1);
-  assert (cur);
-  cur->next = *prev;
-  *prev = cur;
-  
-  if (CONN_INFO(C)->remote_ip) {
-    cur->ipv4 = CONN_INFO(C)->remote_ip;
-    cur->is_ipv6 = 0;
-  } else {
-    memcpy (cur->ipv6, CONN_INFO(C)->remote_ipv6, 16);
-    cur->is_ipv6 = 1;
-  }
-  cur->ref_count = 1;
-  unique_ip_count++;
-}
-
-void unique_ip_remove (connection_job_t C) {
-  check_engine_class ();
-  if (!CONN_INFO(C)->remote_ip && !(CONN_INFO(C)->flags & C_IPV6)) {
-    return; // no IP address
-  }
-  
-  int h = unique_ip_hash (C);
-  struct unique_ip_entry **prev = &UniqueIPHash[h], *cur = *prev;
-  
-  for (; cur; cur = cur->next) {
-    if (unique_ip_equal (C, cur)) {
-      cur->ref_count--;
-      if (cur->ref_count <= 0) {
-        *prev = cur->next;
-        free (cur);
-        unique_ip_count--;
-      }
-      return;
-    }
-    prev = &cur->next;
-  }
-}
-
-int get_unique_ip_count (void) {
-  check_engine_class ();
-  return unique_ip_count;
-}
-
 static inline void check_engine_class (void) {
   check_thread_class (JC_ENGINE);
 }
@@ -517,8 +402,6 @@ struct worker_stats {
 
   long long ext_connections, ext_connections_created;
   long long http_queries, http_bad_headers;
-  
-  int unique_ip_addresses;
 };
 
 struct worker_stats *WStats, SumStats;
@@ -571,7 +454,6 @@ static void update_local_stats_copy (struct worker_stats *S) {
   UPD (ext_connections_created); 
   UPD (http_queries); 
   UPD (http_bad_headers);
-  S->unique_ip_addresses = get_unique_ip_count ();
 #undef UPD
   __sync_synchronize();
   S->cnt++;
@@ -645,7 +527,6 @@ static inline void add_stats (struct worker_stats *W) {
   UPD (ext_connections_created); 
   UPD (http_queries); 
   UPD (http_bad_headers);
-  UPD (unique_ip_addresses);
 #undef UPD
 }
 
@@ -703,10 +584,6 @@ void mtfront_prepare_stats (stats_buffer_t *sb) {
   fetch_buffers_stat (&bufs);
   fetch_tot_dh_rounds_stat (tot_dh_rounds);
   fetch_aes_crypto_stat (&allocated_aes_crypto, &allocated_aes_crypto_temp);
-  
-  if (!workers) {
-    SumStats.unique_ip_addresses = get_unique_ip_count ();
-  }
 
   sb_prepare (sb);
   sb_memory (sb, AM_GET_MEMORY_USAGE_SELF);
@@ -766,7 +643,6 @@ void mtfront_prepare_stats (stats_buffer_t *sb) {
 	     "http_queries\t%lld\n"
 	     "http_bad_headers\t%lld\n"
 	     "http_qps\t%.6f\n"
-	     "unique_ip_addresses\t%d\n"
 	     "proxy_mode\t%d\n"
 	     "proxy_tag_set\t%d\n"
 	     "version\t" VERSION_STR " compiled at " __DATE__ " " __TIME__ " by gcc " __VERSION__ " "
@@ -833,7 +709,6 @@ void mtfront_prepare_stats (stats_buffer_t *sb) {
 	     S(http_queries),
 	     S(http_bad_headers),
 	     safe_div (S(http_queries), uptime),
-	     S1(unique_ip_addresses),
 	     proxy_mode,
 	     proxy_tag_set
   );
@@ -1188,32 +1063,6 @@ int do_close_in_ext_conn (void *_data, int s_len) {
   return JOB_COMPLETED;
 }
 
-// ENGINE context
-int do_remove_unique_ip (void *_data, int s_len) {
-  assert (s_len == sizeof (connection_job_t));
-  connection_job_t C = *(connection_job_t *)_data;
-  if (C && !check_job_completion (C)) {
-    unique_ip_remove (C);
-  }
-  if (C) {
-    job_decref (JOB_REF_PASS (C));
-  }
-  return JOB_COMPLETED;
-}
-
-// ENGINE context
-int do_add_unique_ip (void *_data, int s_len) {
-  assert (s_len == sizeof (connection_job_t));
-  connection_job_t C = *(connection_job_t *)_data;
-  if (C && !check_job_completion (C)) {
-    unique_ip_add (C);
-  }
-  if (C) {
-    job_decref (JOB_REF_PASS (C));
-  }
-  return JOB_COMPLETED;
-}
-
 // NET_CPU context
 int mtproto_http_close (connection_job_t C, int who) {
   assert ((unsigned) CONN_INFO(C)->fd < MAX_CONNECTIONS);
@@ -1224,15 +1073,12 @@ int mtproto_http_close (connection_job_t C, int who) {
     CONN_INFO(C)->pending_queries = 0;
   }
   schedule_job_callback (JC_ENGINE, do_close_in_ext_conn, &CONN_INFO(C)->fd, 4);
-  schedule_job_callback (JC_ENGINE, do_remove_unique_ip, &C, sizeof (connection_job_t));
-  job_incref (C);
   return 0;
 }
 
 int mtproto_ext_rpc_ready (connection_job_t C) {
   assert ((unsigned) CONN_INFO(C)->fd < MAX_CONNECTIONS);
   vkprintf (3, "ext_rpc connection ready (%d)\n", CONN_INFO(C)->fd);
-  unique_ip_add (C);
   lru_insert_conn (C);
   return 0;
 }
@@ -1240,7 +1086,6 @@ int mtproto_ext_rpc_ready (connection_job_t C) {
 int mtproto_ext_rpc_close (connection_job_t C, int who) {
   assert ((unsigned) CONN_INFO(C)->fd < MAX_CONNECTIONS);
   vkprintf (3, "ext_rpc connection closing (%d) by %d\n", CONN_INFO(C)->fd, who);
-  unique_ip_remove (C);
   struct ext_connection *Ex = get_ext_connection_by_in_fd (CONN_INFO(C)->fd);
   if (Ex) {
     remove_ext_connection (Ex, 1);
@@ -1254,7 +1099,6 @@ int mtproto_proxy_rpc_ready (connection_job_t C) {
   int fd = CONN_INFO(C)->fd;
   assert ((unsigned) fd < MAX_CONNECTIONS);
   vkprintf (3, "proxy_rpc connection ready (%d)\n", fd);
-  unique_ip_add (C);
   struct ext_connection *H = &ExtConnectionHead[fd];
   assert (!H->i_prev);
   H->i_prev = H->i_next = H;
@@ -1271,7 +1115,6 @@ int mtproto_proxy_rpc_close (connection_job_t C, int who) {
   int fd = CONN_INFO(C)->fd;
   assert ((unsigned) fd < MAX_CONNECTIONS);
   vkprintf (3, "proxy_rpc connection closing (%d) by %d\n", fd, who);
-  unique_ip_remove (C);
   if (D->extra_int) {
     assert (D->extra_int == -get_conn_tag (C));
     struct ext_connection *H = &ExtConnectionHead[fd], *Ex, *Ex_next;
@@ -1485,7 +1328,6 @@ int http_query_job_run (job_t job, int op, struct job_thread *JT) {
   
   switch (op) {
   case JS_RUN: { // ENGINE context
-    unique_ip_add (HQ->conn);
     lru_insert_conn (HQ->conn);
     struct tl_in_state *tlio_in = tl_in_state_alloc ();
     tlf_init_raw_message (tlio_in, &HQ->msg, HQ->msg.total_bytes, 0);
