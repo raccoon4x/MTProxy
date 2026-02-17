@@ -189,6 +189,7 @@ struct ext_connection_ref {
 };
 
 long long ext_connections, ext_connections_created;
+long long unique_ip_connections;
 
 struct ext_connection_ref OutExtConnections[EXT_CONN_TABLE_SIZE];
 struct ext_connection *InExtConnectionHash[EXT_CONN_HASH_SIZE];
@@ -402,6 +403,7 @@ struct worker_stats {
 
   long long ext_connections, ext_connections_created;
   long long http_queries, http_bad_headers;
+    long long unique_ip_connections;
 };
 
 struct worker_stats *WStats, SumStats;
@@ -420,6 +422,52 @@ long long mtproto_proxy_errors;
 
 char proxy_tag[16];
 int proxy_tag_set;
+
+#define UNIQUE_IP_HASH 8192
+
+static long long compute_unique_ip_connections(void) {
+  unsigned int ip;
+  int i;
+  int total = 0;
+
+  static unsigned int table[UNIQUE_IP_HASH];
+  static unsigned char used[UNIQUE_IP_HASH];
+
+  memset(used, 0, sizeof(used));
+
+  for (i = 0; i < MAX_CONNECTIONS; i++) {
+    struct ext_connection *Ex = &ExtConnectionHead[i];
+
+    if (!Ex->i_next) {
+      continue;
+    }
+
+    struct ext_connection *cur;
+    for (cur = Ex->i_next; cur != Ex; cur = cur->i_next) {
+      connection_job_t C = connection_get_by_fd_generation(cur->in_fd, cur->in_gen);
+      if (!C) continue;
+
+      ip = CONN_INFO(C)->remote_ip;
+      job_decref(JOB_REF_PASS(C));
+
+      if (!ip) continue;
+
+      unsigned int h = ip & (UNIQUE_IP_HASH - 1);
+
+      while (used[h] && table[h] != ip) {
+        h = (h + 1) & (UNIQUE_IP_HASH - 1);
+      }
+
+      if (!used[h]) {
+        used[h] = 1;
+        table[h] = ip;
+        total++;
+      }
+    }
+  }
+
+  return total;
+}
 
 static void update_local_stats_copy (struct worker_stats *S) {
   S->cnt++;
@@ -456,6 +504,7 @@ static void update_local_stats_copy (struct worker_stats *S) {
   UPD (http_bad_headers);
 #undef UPD
   __sync_synchronize();
+  S->unique_ip_connections = compute_unique_ip_connections();
   S->cnt++;
   __sync_synchronize();
 }
@@ -527,6 +576,7 @@ static inline void add_stats (struct worker_stats *W) {
   UPD (ext_connections_created); 
   UPD (http_queries); 
   UPD (http_bad_headers);
+  UPD(unique_ip_connections);
 #undef UPD
 }
 
@@ -629,6 +679,7 @@ void mtfront_prepare_stats (stats_buffer_t *sb) {
 	     "total_accept_connections_failed\t%lld %lld %lld %lld %lld\n"
 	     "ext_connections\t%lld\n"
 	     "ext_connections_created\t%lld\n"
+       "unique_ip_connections\t%lld\n"
 	     "total_active_network_events\t%d\n"
 	     "total_network_buffers_used_size\t%lld\n"
 	     "total_network_buffers_allocated_bytes\t%lld\n"
@@ -695,6 +746,7 @@ void mtfront_prepare_stats (stats_buffer_t *sb) {
 	     S(conn.accept_nonblock_set_failed),
 	     S(ext_connections),
 	     S(ext_connections_created),
+       S(unique_ip_connections),
 	     S(ev_heap_size),
 	     SW(bufs.total_used_buffers_size),
 	     SW(bufs.allocated_buffer_bytes),
