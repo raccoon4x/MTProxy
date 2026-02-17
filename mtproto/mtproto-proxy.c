@@ -597,16 +597,21 @@ static int count_unique_ips (void) {
   if (!ips) {
     return 0;
   }
+  /* Iterate through InExtConnectionHash - this is the authoritative source */
   for (int h = 0; h < EXT_CONN_HASH_SIZE; h++) {
     for (struct ext_connection *Ex = InExtConnectionHash[h]; Ex; Ex = Ex->h_next) {
       if ((unsigned) n >= cap) {
 	break;
+      }
+      if (!Ex->in_fd || (unsigned) Ex->in_fd >= MAX_CONNECTIONS) {
+	continue;
       }
       connection_job_t CI = connection_get_by_fd_generation (Ex->in_fd, Ex->in_gen);
       if (!CI) {
 	continue;
       }
       unsigned ip = CONN_INFO (CI)->remote_ip;
+      job_decref (JOB_REF_PASS (CI));
       if (ip != 0) {
 	ips[n++] = ip;
       }
