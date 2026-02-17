@@ -578,11 +578,18 @@ static int cmp_uint (const void *a, const void *b) {
 }
 
 /* Count unique IPv4 addresses among inbound ext_connections (current worker).
- * Must be called from engine context. IPv6-only connections are not counted. */
+ * IPv6-only connections are not counted.
+ * Returns 0 if in main process with workers, or if no connections found. */
 static int count_unique_ips (void) {
-  check_engine_class ();
+  /* In main process with workers, connections are in worker processes */
+  if (workers > 0 && !slave_mode) {
+    return 0;
+  }
+  if (ext_connections <= 0) {
+    return 0;
+  }
   int n = 0;
-  unsigned int cap = (ext_connections > 0 ? (unsigned int) ext_connections * 2 : 1);
+  unsigned int cap = (unsigned int) ext_connections * 2;
   if (cap > EXT_CONN_TABLE_SIZE / 2) {
     cap = EXT_CONN_TABLE_SIZE / 2;
   }
